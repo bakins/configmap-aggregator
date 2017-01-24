@@ -24,6 +24,9 @@ You may also specify a label query, by passing the `--selector=<key=value>` flag
 Generally, run an instance of `configmap-aggregator` for each targeted config map. In the future,
 this may be driven by a [third party resource](https://kubernetes.io/docs/user-guide/thirdpartyresources/).
 
+Note: we assume you are running `kubectl` in proxy mode to handle authentication with
+Kubernetes.
+
 # Status
 
 It works, but is not well tested.
