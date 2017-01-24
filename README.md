@@ -9,6 +9,8 @@ config maps into a single directory.  As I want to manage some config files - fo
 with the application (in [helm](https://github.com/kubernetes/helm) charts, perhaps), I needed
 a utility to do this.  Hence, `configmap-aggregator`
 
+Heavily influenced by [konfd](https://github.com/kelseyhightower/konfd)
+
 # Usage
 
 ./configmap-aggregator <target-namespace> <target-name>

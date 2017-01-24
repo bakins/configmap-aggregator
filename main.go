@@ -1,9 +1,17 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
+	"hash/fnv"
+	"log"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
@@ -25,23 +33,25 @@ var rootCmd = &cobra.Command{
 var (
 	selector, endpoint string
 	namespaces         []string
+	onetime            bool
+	syncInterval       time.Duration
 )
 
 func main() {
 	rootCmd.PersistentFlags().StringVarP(&selector, "selector", "s", "", "label selector")
 	rootCmd.PersistentFlags().StringVarP(&endpoint, "endpoint", "e", "http://127.0.0.1:8001", "kubernetes endpoint")
 	rootCmd.PersistentFlags().StringArrayVarP(&namespaces, "namespace", "n", nil, "namespace to query. can be used multiple times. default is all namespaces")
+	rootCmd.PersistentFlags().BoolVarP(&onetime, "onetime", "o", false, "run one time and exit.")
+	rootCmd.PersistentFlags().DurationVarP(&syncInterval, "sync-interval", "i", (60 * time.Second), "the time duration between template processing.")
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Println(err)
-		os.Exit(-1)
+		log.Fatal(err)
 	}
 }
 
 func runAggregator(cmd *cobra.Command, args []string) {
 	if len(args) != 2 {
-		fmt.Println("namespace and name of target configmap is required")
-		os.Exit(-2)
+		log.Fatal("namespace and name of target configmap is required")
 	}
 
 	if len(namespaces) == 0 {
@@ -55,18 +65,76 @@ func runAggregator(cmd *cobra.Command, args []string) {
 		targetName:      args[1],
 	}
 
+	log.Println("Starting configmap-aggregator...")
+
+	if err := c.client.waitForKubernetes(); err != nil {
+		log.Fatal(err)
+	}
+
+	if onetime {
+		if err := c.process(); err != nil {
+			log.Fatal(err)
+		}
+		os.Exit(0)
+	}
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+
+	go func() {
+		wg.Add(1)
+		for {
+			if err := c.process(); err != nil {
+				log.Printf("failed to process config maps: %v", err)
+			}
+			// TODO: info level?
+			//else {
+			//	log.Printf("configmap aggregation complete. Next sync in %v seconds.", syncInterval.Seconds())
+			//}
+			select {
+			case <-time.After(syncInterval):
+			case <-done:
+				wg.Done()
+				return
+			}
+		}
+	}()
+
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+
+	<-signalChan
+	log.Printf("Shutdown signal received, exiting...")
+	close(done)
+	wg.Wait()
+	os.Exit(0)
+}
+
+func hashConfigMap(cm *ConfigMap) string {
+	h := fnv.New64()
+	printer := spew.ConfigState{
+		Indent:         " ",
+		SortKeys:       true,
+		DisableMethods: true,
+		SpewKeys:       true,
+	}
+
+	// we only hash the data for now
+	printer.Fprintf(h, "%#v", cm.Data)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// true if they are the same
+func compareConfigMaps(a, b *ConfigMap) bool {
+	return hashConfigMap(a) == hashConfigMap(b)
+}
+
+func (c *controller) process() error {
 	cm, err := c.createConfigMap()
 	if err != nil {
-		fmt.Println(err)
-		os.Exit(-4)
+		return err
 	}
-
-	err = c.upsertConfigMap(cm)
-	if err != nil {
-		fmt.Println(err)
-		os.Exit(-4)
-	}
-
+	return c.upsertConfigMap(cm)
 }
 
 func (c *controller) createConfigMap() (*ConfigMap, error) {
@@ -115,5 +183,11 @@ func (c *controller) upsertConfigMap(cm *ConfigMap) error {
 	}
 	cm.Metadata.ResourceVersion = existing.Metadata.ResourceVersion
 
+	// XXX: unset fields on existing that will cause to not match
+	// currently we don't unmarshal any
+
+	if compareConfigMaps(existing, cm) {
+		return nil
+	}
 	return c.client.updateConfigMap(cm)
 }

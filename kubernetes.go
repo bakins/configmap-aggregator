@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"time"
 
 	"github.com/pkg/errors"
 )
@@ -177,4 +178,22 @@ func (k *k8sClient) updateConfigMap(c *ConfigMap) error {
 	}
 
 	return nil
+}
+
+func (k *k8sClient) waitForKubernetes() error {
+	timeout := time.After(time.Minute)
+	tick := time.Tick(5 * time.Second)
+	for {
+		select {
+		case <-timeout:
+			return errors.New("timed out waiting for Kubernetes")
+		case <-tick:
+			resp, err := http.Get(k.endpoint + "/api")
+			if err == nil {
+				resp.Body.Close()
+				return nil
+			}
+		}
+	}
+
 }
